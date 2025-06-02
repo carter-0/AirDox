@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define TAG "Id Card"
+#define TAG "AirDox"
 
 typedef struct {
     FuriMessageQueue* input_queue;
@@ -28,11 +28,15 @@ static void sniffer_packet_cb(
     int8_t         rssi,
     void*          ctx) {
 
-    UNUSED(data);
-    UNUSED(len);
-
     Id_card* app = ctx;
     if(!app) return;
+
+    FURI_LOG_I(TAG, "RSSI: %d", rssi);
+    FURI_LOG_I(TAG, "Data (provided len: %d):", len);
+    for(int i = 0; i < len; i++) {
+        FURI_LOG_RAW_I("%02X ", (uint8_t)data[i]);
+    }
+    FURI_LOG_RAW_I("\r\n");
 
     app->sniffer_packets++;
     app->rssi = (float)rssi;
@@ -71,7 +75,6 @@ static void input_cb(InputEvent* evt, void* ctx) {
 }
 
 int32_t air_dox_app(void* p) {
-    furi_delay_ms(7000);
     UNUSED(p);
 
     Id_card app = {0};
@@ -88,10 +91,16 @@ int32_t air_dox_app(void* p) {
     snprintf(app.debug_msg, sizeof(app.debug_msg), "Starting sniffer...");
     FURI_LOG_I(TAG, "Initializing BLE sniffer");
 
-    furi_hal_bt_reinit();
-    furi_delay_ms(20);
+    furi_hal_bt_lock_core2();
+
     furi_hal_bt_stop_advertising();
-    furi_delay_ms(20);
+
+    furi_hal_bt_unlock_core2();
+
+    furi_hal_bt_reinit();
+    FURI_LOG_I(TAG, "Reinted");
+    furi_delay_ms(500);
+    // FURI_LOG_I(TAG, "Reinted (delay)");
 
     if(furi_hal_bt_sniffer_start(sniffer_packet_cb, &app)) {
         app.sniffer_started = true;
@@ -109,13 +118,11 @@ int32_t air_dox_app(void* p) {
         app.sniffer_active = furi_hal_bt_is_sniffer_active();
         app.loop_count++;
 
-        furi_hal_bt_hci_user_evt_proc(); // drain FIFO to our callback
-
-        if(furi_message_queue_get(app.input_queue, &input, 100) == FuriStatusOk) {
+        // Non-blocking check for input
+        if(furi_message_queue_get(app.input_queue, &input, 0) == FuriStatusOk) {
             switch(input.key) {
             case InputKeyLeft:
             case InputKeyRight:
-            case InputKeyOk:
             case InputKeyUp:
             case InputKeyDown:
             case InputKeyBack:
@@ -125,6 +132,9 @@ int32_t air_dox_app(void* p) {
                 break;
             }
         }
+
+        // Small delay to prevent CPU hogging
+        furi_delay_ms(10);
 
         view_port_update(app.view_port);
     }
