@@ -418,7 +418,7 @@ static void draw_cb(Canvas* canvas, void* ctx) {
 
     // Title bar
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 1, 2, AlignLeft, AlignTop, "Apple BLE State");
+    canvas_draw_str_aligned(canvas, 1, 2, AlignLeft, AlignTop, "BLE Sniffer");
     
     canvas_set_font(canvas, FontSecondary);
     snprintf(buf, sizeof(buf), "Devices: %zu", app->device_count);

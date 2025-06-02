@@ -11,6 +11,7 @@ App(
     sources=[
         "air_dox.c",
         "apple_ble_read_state.c",
+        "apple_ble_hash_demo.c",
     ],
     # Optional values
     # fap_version="0.1",

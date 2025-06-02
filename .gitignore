@@ -6,3 +6,4 @@ dist/*
 .env
 .ufbt
 dist/
+CLAUDE.md*

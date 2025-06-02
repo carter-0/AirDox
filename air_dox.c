@@ -6,11 +6,13 @@
 #include <string.h>
 
 #include "apple_ble_read_state.h"
+#include "apple_ble_hash_demo.h"
 
 #define TAG "AirDox"
 
 typedef enum {
     DemoAppleBleReadState,
+    DemoAppleBleHashDemo,
     DemoCount
 } DemoIndex;
 
@@ -21,6 +23,7 @@ typedef struct {
 
 static const Demo demos[] = {
     {"Apple BLE State", apple_ble_read_state_app},
+    {"Apple BLE Hash Demo", apple_ble_hash_demo_app},
 };
 
 typedef struct {
