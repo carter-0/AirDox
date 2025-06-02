@@ -7,6 +7,7 @@
 #include <string.h>
 #include <storage/storage.h>
 #include <furi_hal_crypto.h>
+#include <furi_hal_light.h>
 
 #define __FLIPPER__ 1
 #include "picohash.h"
@@ -69,7 +70,6 @@ typedef struct {
     char state[32];
     char device[32];
     char wifi[16];
-    char os[16];
     char notes[64];
     int8_t rssi;
     uint32_t timestamp;
@@ -90,6 +90,7 @@ typedef struct {
     
     // Current scroll position
     size_t scroll_pos;
+    int h_scroll_offset;  // Horizontal scroll offset in pixels
     
     uint32_t loop_count;
 } AppleBleReadState;
@@ -122,6 +123,22 @@ static void mac_to_str(const uint8_t* mac, char* str) {
              mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
 }
 
+/* Sort devices by RSSI using insertion sort (strongest first) */
+static void sort_devices_by_rssi(AppleDevice* devices, size_t count) {
+    for(size_t i = 1; i < count; i++) {
+        AppleDevice temp = devices[i];
+        size_t j = i;
+        
+        // Move elements with lower RSSI to the right
+        while(j > 0 && devices[j-1].rssi < temp.rssi) {
+            devices[j] = devices[j-1];
+            j--;
+        }
+        
+        devices[j] = temp;
+    }
+}
+
 /* Find or add device */
 static AppleDevice* find_or_add_device(AppleBleReadState* app, const uint8_t* mac, int8_t rssi) {
     char mac_str[MAC_ADDR_LEN];
@@ -145,7 +162,6 @@ static AppleDevice* find_or_add_device(AppleBleReadState* app, const uint8_t* ma
         strcpy(dev->state, "<unknown>");
         strcpy(dev->device, "<unknown>");
         strcpy(dev->wifi, "");
-        strcpy(dev->os, "");
         strcpy(dev->notes, "");
         app->device_count++;
         return dev;
@@ -154,61 +170,18 @@ static AppleDevice* find_or_add_device(AppleBleReadState* app, const uint8_t* ma
     return NULL;
 }
 
-/* Parse OS/WiFi code */
-static void parse_os_wifi_code(uint8_t code, const char* dev_type, char* os, char* wifi) {
-    switch(code) {
-        case 0x1c:
-            strcpy(os, strcmp(dev_type, "MacBook") == 0 ? "Mac OS" : "iOS12");
-            strcpy(wifi, "On");
-            break;
-        case 0x18:
-            strcpy(os, strcmp(dev_type, "MacBook") == 0 ? "Mac OS" : "iOS12");
+/* Parse WiFi code using modern iOS logic */
+static void parse_wifi_code(uint8_t code, char* wifi) {
+    // Check bit 2 (0x04) for WiFi state - consistent across iOS 12+
+    if (code & 0x04) {
+        strcpy(wifi, "On");
+    } else {
+        // For legacy iOS versions, check specific codes
+        if (code == 0x00 || code == 0x10) {
+            strcpy(wifi, "Unknown"); // iOS 10/11 - no WiFi info
+        } else {
             strcpy(wifi, "Off");
-            break;
-        case 0x10:
-            strcpy(os, "iOS11");
-            strcpy(wifi, "<unknown>");
-            break;
-        case 0x1e:
-            strcpy(os, "iOS13");
-            strcpy(wifi, "On");
-            break;
-        case 0x1a:
-            strcpy(os, "iOS13");
-            strcpy(wifi, "Off");
-            break;
-        case 0x0e:
-            strcpy(os, "iOS13");
-            strcpy(wifi, "Connecting");
-            break;
-        case 0x0c:
-            strcpy(os, "iOS12");
-            strcpy(wifi, "On");
-            break;
-        case 0x04:
-            strcpy(os, "iOS13");
-            strcpy(wifi, "On");
-            break;
-        case 0x00:
-            strcpy(os, "iOS10");
-            strcpy(wifi, "<unknown>");
-            break;
-        case 0x09:
-            strcpy(os, "Mac OS");
-            strcpy(wifi, "<unknown>");
-            break;
-        case 0x14:
-            strcpy(os, "Mac OS");
-            strcpy(wifi, "On");
-            break;
-        case 0x98:
-            strcpy(os, "WatchOS");
-            strcpy(wifi, "<unknown>");
-            break;
-        default:
-            strcpy(os, "");
-            strcpy(wifi, "");
-            break;
+        }
     }
 }
 
@@ -232,12 +205,8 @@ static void parse_nearby(AppleBleReadState* app, const uint8_t* mac, int8_t rssi
         strcpy(dev->device, "iPhone"); // Default, would need header analysis
     }
     
-    // Update OS and WiFi
-    parse_os_wifi_code(wifi_code, dev->device, dev->os, dev->wifi);
-    
-    if(strcmp(dev->os, "WatchOS") == 0) {
-        strcpy(dev->device, "Watch");
-    }
+    // Update WiFi state
+    parse_wifi_code(wifi_code, dev->wifi);
 }
 
 /* Parse AirPods packet */
@@ -253,15 +222,15 @@ static void parse_airpods(AppleBleReadState* app, const uint8_t* mac, int8_t rss
     // Device model
     switch(model) {
         case 0x0220: strcpy(dev->device, "AirPods"); break;
-        case 0x0320: strcpy(dev->device, "Powerbeats3"); break;
+        case 0x0320: strcpy(dev->device, "Beats3"); break;
         case 0x0520: strcpy(dev->device, "BeatsX"); break;
-        case 0x0620: strcpy(dev->device, "Beats Solo3"); break;
+        case 0x0620: strcpy(dev->device, "Solo3"); break;
         default: strcpy(dev->device, "AirPods"); break;
     }
     
-    // Battery levels
-    int bat_left = (battery1 >> 4) * 10;
-    int bat_right = (battery1 & 0x0F) * 10;
+    // Battery levels - convert from 0-15 to 0-100%
+    int bat_left = ((battery1 >> 4) * 100) / 15;
+    int bat_right = ((battery1 & 0x0F) * 100) / 15;
     
     // State
     if(data[3] == 0x09) {
@@ -321,7 +290,7 @@ static bool parse_apple_data(const uint8_t* mfg_data, uint8_t len, AppleBleReadS
                     AppleDevice* dev = find_or_add_device(app, mac, rssi);
                     if(dev) {
                         strcpy(dev->state, "Idle");
-                        strcpy(dev->device, "AppleWatch");
+                        strcpy(dev->device, "Watch");
                     }
                 }
                 break;
@@ -373,6 +342,11 @@ static void sniffer_packet_cb(
 
     app->sniffer_packets++;
     
+    // LED flicker for packet received
+    furi_hal_light_set(LightBlue, 0xFF);
+    furi_delay_ms(25);
+    furi_hal_light_set(LightBlue, 0x00);
+    
     // Extract MAC address from the BLE packet
     // In BLE packets, the MAC is typically at offset 2 after flags
     uint8_t mac[6] = {0};
@@ -391,7 +365,7 @@ static void sniffer_packet_cb(
     }
 }
 
-/* Remove old devices */
+/* Remove old devices and sort by RSSI */
 static void remove_old_devices(AppleBleReadState* app) {
     uint32_t current_time = furi_get_tick() / 1000;
     size_t write_idx = 0;
@@ -407,6 +381,11 @@ static void remove_old_devices(AppleBleReadState* app) {
     }
     
     app->device_count = write_idx;
+    
+    // Sort devices by RSSI (strongest first)
+    if(app->device_count > 0) {
+        sort_devices_by_rssi(app->devices, app->device_count);
+    }
 }
 
 static void draw_cb(Canvas* canvas, void* ctx) {
@@ -416,51 +395,128 @@ static void draw_cb(Canvas* canvas, void* ctx) {
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
 
-    // Title bar
+    // Title bar with device count and packet count
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 1, 2, AlignLeft, AlignTop, "BLE Sniffer");
+    canvas_draw_str_aligned(canvas, 1, 2, AlignLeft, AlignTop, "BLE Scanner");
     
     canvas_set_font(canvas, FontSecondary);
-    snprintf(buf, sizeof(buf), "Devices: %zu", app->device_count);
-    canvas_draw_str_aligned(canvas, 80, 2, AlignLeft, AlignTop, buf);
+    snprintf(buf, sizeof(buf), "D:%zu", app->device_count);  // Shorter format
+    canvas_draw_str_aligned(canvas, 75, 2, AlignLeft, AlignTop, buf);
+    
+    // Add packet counter in P:1k format
+    if(app->sniffer_packets >= 1000) {
+        snprintf(buf, sizeof(buf), "P:%luk", app->sniffer_packets / 1000);
+    } else {
+        snprintf(buf, sizeof(buf), "P:%lu", app->sniffer_packets);
+    }
+    canvas_draw_str_aligned(canvas, 100, 2, AlignLeft, AlignTop, buf);
 
-    // Column headers
-    canvas_draw_str_aligned(canvas, 1, 12, AlignLeft, AlignTop, "State");
-    canvas_draw_str_aligned(canvas, 50, 12, AlignLeft, AlignTop, "Device");
-    canvas_draw_str_aligned(canvas, 90, 12, AlignLeft, AlignTop, "WiFi");
+    // Define column positions with proper spacing
+    int col_state = 0;    // State column
+    int col_device = 44;  // Device column (44 pixels from state)
+    int col_wifi = 84;    // WiFi column
+    int col_dbm = 114;    // dBm column
+    int col_mac = 140;    // MAC column
+    
+    // Column headers - shifted by horizontal scroll
+    int base_x = -app->h_scroll_offset;
+    canvas_draw_str_aligned(canvas, base_x + col_state, 12, AlignLeft, AlignTop, "State");
+    canvas_draw_str_aligned(canvas, base_x + col_device, 12, AlignLeft, AlignTop, "Device");
+    canvas_draw_str_aligned(canvas, base_x + col_wifi, 12, AlignLeft, AlignTop, "WiFi");
+    canvas_draw_str_aligned(canvas, base_x + col_dbm, 12, AlignLeft, AlignTop, "dBm");
+    canvas_draw_str_aligned(canvas, base_x + col_mac, 12, AlignLeft, AlignTop, "MAC");
     
     // Device list
     int y = 22;
-    size_t max_visible = 4; // Max devices that fit on screen
+    size_t max_visible = 5; // Show 5 devices with good spacing
     
-    for(size_t i = app->scroll_pos; i < app->device_count && i < app->scroll_pos + max_visible; i++) {
-        AppleDevice* dev = &app->devices[i];
+    // Calculate visible devices accounting for those with notes
+    size_t visible_count = 0;
+    size_t current_index = app->scroll_pos;
+    
+    while(visible_count < max_visible && current_index < app->device_count && y < 64) {
+        AppleDevice* dev = &app->devices[current_index];
         
-        // State (truncated)
-        char state[16];
-        strncpy(state, dev->state, 15);
-        state[15] = '\0';
-        canvas_draw_str_aligned(canvas, 1, y, AlignLeft, AlignTop, state);
+        // State (truncated to fit in column width)
+        char state[11];  // Max 10 chars + null
+        if(strstr(dev->state, "Lock screen")) {
+            strcpy(state, "Locked");
+        } else if(strstr(dev->state, "Home screen")) {
+            strcpy(state, "Home");
+        } else if(strstr(dev->state, "Incoming call")) {
+            strcpy(state, "Call In");
+        } else if(strstr(dev->state, "Outgoing call")) {
+            strcpy(state, "Call Out");
+        } else if(strstr(dev->state, "WiFi screen")) {
+            strcpy(state, "WiFi");
+        } else if(strstr(dev->state, "Case:Closed")) {
+            strcpy(state, "Case");
+        } else if(strcmp(dev->state, "<unknown>") == 0) {
+            strcpy(state, "Unknown");  // Shorter without brackets
+        } else {
+            strncpy(state, dev->state, 9);  // Reduced to 9 chars for safety
+            state[9] = '\0';
+        }
+        canvas_draw_str_aligned(canvas, base_x + col_state, y, AlignLeft, AlignTop, state);
         
-        // Device type
-        canvas_draw_str_aligned(canvas, 50, y, AlignLeft, AlignTop, dev->device);
+        // Device type (max 9 chars)
+        char device[10];
+        strncpy(device, dev->device, 9);
+        device[9] = '\0';
+        canvas_draw_str_aligned(canvas, base_x + col_device, y, AlignLeft, AlignTop, device);
         
-        // WiFi status
-        canvas_draw_str_aligned(canvas, 90, y, AlignLeft, AlignTop, dev->wifi);
+        // WiFi info (max 8 chars to fit)
+        char wifi_str[9];
+        if(strcmp(dev->wifi, "On") == 0) {
+            strcpy(wifi_str, "On");
+        } else if(strcmp(dev->wifi, "Off") == 0) {
+            strcpy(wifi_str, "Off");
+        } else if(strcmp(dev->wifi, "Unknown") == 0) {
+            strcpy(wifi_str, "?");
+        } else if(strlen(dev->wifi) == 0) {
+            strcpy(wifi_str, "-");
+        } else {
+            strncpy(wifi_str, dev->wifi, 8);
+            wifi_str[8] = '\0';
+        }
+        canvas_draw_str_aligned(canvas, base_x + col_wifi, y, AlignLeft, AlignTop, wifi_str);
         
-        // RSSI on far right
-        snprintf(buf, sizeof(buf), "%ddB", (int)dev->rssi);
-        canvas_draw_str_aligned(canvas, 100, y, AlignLeft, AlignTop, buf);
+        // RSSI (max 4 chars: -999)
+        snprintf(buf, sizeof(buf), "%d", (int)dev->rssi);
+        canvas_draw_str_aligned(canvas, base_x + col_dbm, y, AlignLeft, AlignTop, buf);
+        
+        // MAC address
+        canvas_draw_str_aligned(canvas, base_x + col_mac, y, AlignLeft, AlignTop, dev->mac);
+        
+        // Show notes on second line if present (battery info for AirPods)
+        if(strlen(dev->notes) > 0) {
+            canvas_draw_str_aligned(canvas, base_x + col_state + 2, y + 8, AlignLeft, AlignTop, dev->notes);
+            y += 8; // Extra space for notes
+        }
         
         y += 10;
+        visible_count++;
+        current_index++;
     }
     
-    // Scroll indicator
-    if(app->device_count > max_visible) {
-        canvas_draw_str_aligned(canvas, 122, 30, AlignLeft, AlignTop, 
-            app->scroll_pos > 0 ? "^" : " ");
-        canvas_draw_str_aligned(canvas, 122, 50, AlignLeft, AlignTop, 
-            app->scroll_pos + max_visible < app->device_count ? "v" : " ");
+    // Vertical scroll indicators
+    if(app->device_count > 0) {
+        // Up arrow
+        if(app->scroll_pos > 0) {
+            canvas_draw_str_aligned(canvas, 122, 22, AlignLeft, AlignTop, "^");
+        }
+        // Down arrow - check if there are more devices to show
+        if(current_index < app->device_count) {
+            canvas_draw_str_aligned(canvas, 122, 55, AlignLeft, AlignTop, "v");
+        }
+    }
+    
+    // Horizontal scroll indicator
+    if(app->h_scroll_offset > 0) {
+        canvas_draw_str_aligned(canvas, 0, 32, AlignLeft, AlignTop, "<");
+    }
+    if(app->h_scroll_offset < 120) { // Max scroll offset to see MAC addresses
+        canvas_draw_str_aligned(canvas, 122, 32, AlignLeft, AlignTop, ">");
     }
 }
 
@@ -521,18 +577,41 @@ int32_t apple_ble_read_state_app(void* p) {
 
         // Non-blocking check for input
         if(furi_message_queue_get(app->input_queue, &input, 0) == FuriStatusOk) {
-            if(input.type == InputTypePress) {
+            if(input.type == InputTypePress || input.type == InputTypeRepeat) {
                 switch(input.key) {
                 case InputKeyUp:
-                    if(app->scroll_pos > 0) app->scroll_pos--;
+                    if(app->scroll_pos > 0) {
+                        app->scroll_pos--;
+                        view_port_update(app->view_port);
+                    }
                     break;
                 case InputKeyDown:
-                    if(app->scroll_pos + 4 < app->device_count) app->scroll_pos++;
+                    // Check if we can scroll down more
+                    if(app->scroll_pos < app->device_count - 1) {
+                        app->scroll_pos++;
+                        view_port_update(app->view_port);
+                    }
+                    break;
+                case InputKeyLeft:
+                    if(app->h_scroll_offset > 0) {
+                        app->h_scroll_offset -= 10;
+                        if(app->h_scroll_offset < 0) app->h_scroll_offset = 0;
+                        view_port_update(app->view_port);
+                    }
+                    break;
+                case InputKeyRight:
+                    if(app->h_scroll_offset < 120) { // Max scroll right to see full MAC
+                        app->h_scroll_offset += 10;
+                        if(app->h_scroll_offset > 120) app->h_scroll_offset = 120;
+                        view_port_update(app->view_port);
+                    }
                     break;
                 case InputKeyOk:
                     // Clear all devices
                     app->device_count = 0;
                     app->scroll_pos = 0;
+                    app->h_scroll_offset = 0;
+                    view_port_update(app->view_port);
                     break;
                 case InputKeyBack:
                     exit_loop = true;
@@ -546,7 +625,13 @@ int32_t apple_ble_read_state_app(void* p) {
         // Small delay to prevent CPU hogging
         furi_delay_ms(10);
 
-        view_port_update(app->view_port);
+        // Update view more frequently for real-time feel
+        static uint32_t last_update = 0;
+        uint32_t current_ms = furi_get_tick();
+        if(current_ms - last_update >= 100) { // Update every 100ms (10 times per second)
+            view_port_update(app->view_port);
+            last_update = current_ms;
+        }
     }
 
     if(app->sniffer_started) {

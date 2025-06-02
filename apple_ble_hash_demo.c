@@ -5,20 +5,29 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <furi_hal_light.h>
 
 #define TAG "AppleBleHashDemo"
 
 #define APPLE_COMPANY_ID 0x004C
-#define WIFI_JOIN_TYPE 0x0f
-#define NEARBY_TYPE 0x10
+#define AIRDROP_TYPE 0x05
 #define MAX_HASHES 100
+#define MAX_LOG_LINES 10
 
 typedef struct {
     char mac_short[9];      // "XX:XX:XX\0" - last 3 octets
-    uint8_t apple_id_hash[3];
+    uint8_t apple_id_hash[2];
+    uint8_t phone_hash[2]; 
+    uint8_t email_hash[2];
     uint32_t timestamp;
     uint32_t seen_count;
 } HashEntry;
+
+typedef struct {
+    char log_lines[MAX_LOG_LINES][64];
+    int log_count;
+    int log_start;
+} LogBuffer;
 
 typedef struct {
     FuriMessageQueue* input_queue;
@@ -29,8 +38,11 @@ typedef struct {
     size_t hash_count;
     size_t scroll_pos;
     
+    LogBuffer log_buffer;
+    
     bool sniffer_active;
     uint32_t packets_seen;
+    uint32_t airdrop_packets_seen;
 } AppleBleHashDemo;
 
 /* Helper function to find a specific AD type in BLE advertisement data */
@@ -65,14 +77,15 @@ static void mac_to_short_str(const uint8_t* mac, char* str) {
 }
 
 /* Find or add hash entry */
-static HashEntry* find_or_add_hash(AppleBleHashDemo* app, const uint8_t* mac, const uint8_t* apple_id_hash) {
+static HashEntry* find_or_add_hash(AppleBleHashDemo* app, const uint8_t* mac, const uint8_t* apple_id_hash, const uint8_t* phone_hash, const uint8_t* email_hash) {
     char mac_short[9];
     mac_to_short_str(mac, mac_short);
     
-    // Find existing entry
+    // Find existing entry with same MAC and hashes
     for(size_t i = 0; i < app->hash_count; i++) {
         if(strcmp(app->hashes[i].mac_short, mac_short) == 0 &&
-           memcmp(app->hashes[i].apple_id_hash, apple_id_hash, 3) == 0) {
+           memcmp(app->hashes[i].apple_id_hash, apple_id_hash, 2) == 0 &&
+           memcmp(app->hashes[i].phone_hash, phone_hash, 2) == 0) {
             app->hashes[i].timestamp = furi_get_tick() / 1000;
             app->hashes[i].seen_count++;
             return &app->hashes[i];
@@ -83,7 +96,10 @@ static HashEntry* find_or_add_hash(AppleBleHashDemo* app, const uint8_t* mac, co
     if(app->hash_count < MAX_HASHES) {
         HashEntry* entry = &app->hashes[app->hash_count];
         strncpy(entry->mac_short, mac_short, 8);
-        memcpy(entry->apple_id_hash, apple_id_hash, 3);
+        entry->mac_short[8] = '\0';
+        memcpy(entry->apple_id_hash, apple_id_hash, 2);
+        memcpy(entry->phone_hash, phone_hash, 2);
+        memcpy(entry->email_hash, email_hash, 2);
         entry->timestamp = furi_get_tick() / 1000;
         entry->seen_count = 1;
         app->hash_count++;
@@ -93,79 +109,169 @@ static HashEntry* find_or_add_hash(AppleBleHashDemo* app, const uint8_t* mac, co
     return NULL;
 }
 
-/* Parse Nearby packet (type 0x10) */
-static void parse_nearby(AppleBleHashDemo* app, const uint8_t* mac, const uint8_t* data, uint8_t len) {
-    // Nearby packet structure (based on Python reference):
-    // 0: status (1 byte)
-    // 1: wifi (1 byte) 
-    // 2-4: authTag (3 bytes)
-    // More data may follow...
+/* Add message to log buffer */
+static void add_log_message(AppleBleHashDemo* app, const char* message) {
+    int next_pos = (app->log_buffer.log_start + app->log_buffer.log_count) % MAX_LOG_LINES;
     
-    if(len < 5) return;
+    if(app->log_buffer.log_count < MAX_LOG_LINES) {
+        app->log_buffer.log_count++;
+    } else {
+        app->log_buffer.log_start = (app->log_buffer.log_start + 1) % MAX_LOG_LINES;
+    }
     
-    // Extract a hash from the auth tag area (bytes 2-4)
-    const uint8_t* hash_data = &data[2];
+    strncpy(app->log_buffer.log_lines[next_pos], message, 63);
+    app->log_buffer.log_lines[next_pos][63] = '\0';
     
-    find_or_add_hash(app, mac, hash_data);
+    FURI_LOG_I(TAG, "Added to screen log: %s (count=%d)", message, app->log_buffer.log_count);
+    
+    // Force screen update
+    if(app->view_port) {
+        view_port_update(app->view_port);
+    }
 }
 
-/* Parse WiFi Join packet */
-static void parse_wifi_join(AppleBleHashDemo* app, const uint8_t* mac, const uint8_t* data, uint8_t len) {
-    // WiFi join packet structure:
-    // 0: flags (1 byte)
-    // 1: type (1 byte) - should be 0x08
-    // 2-4: auth tag (3 bytes)
-    // 5-7: sha(appleID) (3 bytes)
-    // 8-10: sha(phone_nbr) (3 bytes)
-    // 11-13: sha(email) (3 bytes)
-    // 14-16: sha(SSID) (3 bytes)
+/* Parse old AirDrop packet (type 0x05) */
+static void parse_airdrop_old(AppleBleHashDemo* app, const uint8_t* mac, const uint8_t* data, uint8_t len) {
+    // Old AirDrop packet structure (from Python reference):
+    // 0-7: zeros (8 bytes)
+    // 8: status (0x01) (1 byte)
+    // 9-10: sha(AppleID) (2 bytes)
+    // 11-12: sha(phone) (2 bytes)
+    // 13-14: sha(email) (2 bytes)
+    // 15-16: sha(email2) (2 bytes)
+    // 17: zero (1 byte)
     
-    if(len < 8) return;
+    FURI_LOG_I(TAG, "Parsing AirDrop payload (len=%d)", len);
     
-    uint8_t type = data[1];
-    
-    // Extract Apple ID hash - try multiple offsets
-    const uint8_t* apple_id_hash = NULL;
-    
-    if(len >= 8 && type == 0x08) {
-        apple_id_hash = &data[5]; // Standard offset
-    } else if(len >= 5) {
-        apple_id_hash = &data[2]; // Alternative offset
-    } else {
+    if(len < 18) {
+        FURI_LOG_I(TAG, "AirDrop packet too short: %d bytes (need 18)", len);
+        // But let's still try to extract what we can if we have at least 4 bytes
+        if(len >= 4) {
+            app->airdrop_packets_seen++;
+            
+            // Use whatever data we have
+            uint8_t apple_id_hash[2] = {0};
+            uint8_t phone_hash[2] = {0};
+            uint8_t email_hash[2] = {0};
+            
+            if(len >= 2) {
+                apple_id_hash[0] = data[0];
+                apple_id_hash[1] = data[1];
+            }
+            if(len >= 4) {
+                phone_hash[0] = data[2];
+                phone_hash[1] = data[3];
+            }
+            if(len >= 6) {
+                email_hash[0] = data[4];
+                email_hash[1] = data[5];
+            }
+            
+            find_or_add_hash(app, mac, apple_id_hash, phone_hash, email_hash);
+            
+            // Add to screen log
+            char log_msg[64];
+            snprintf(log_msg, sizeof(log_msg), "AirDrop: %02X:%02X:%02X A:%02X%02X P:%02X%02X",
+                     mac[3], mac[4], mac[5],
+                     apple_id_hash[0], apple_id_hash[1],
+                     phone_hash[0], phone_hash[1]);
+            add_log_message(app, log_msg);
+        }
         return;
     }
     
-    find_or_add_hash(app, mac, apple_id_hash);
-}
-
-/* Parse Apple manufacturer specific data */
-static void parse_apple_data(const uint8_t* mfg_data, uint8_t len, AppleBleHashDemo* app, const uint8_t* mac) {
-    if(len < 2) return;
+    // Check the structure more flexibly
+    FURI_LOG_I(TAG, "Checking AirDrop structure: data[8]=0x%02X (expect 0x01)", data[8]);
     
-    uint16_t company_id = mfg_data[0] | (mfg_data[1] << 8);
-    if(company_id != APPLE_COMPANY_ID) return;
+    // Check if it starts with zeros and has status 0x01 at position 8
+    bool starts_with_zeros = true;
+    for(int i = 0; i < 8; i++) {
+        if(data[i] != 0x00) {
+            starts_with_zeros = false;
+            FURI_LOG_D(TAG, "Non-zero at position %d: 0x%02X", i, data[i]);
+            break;
+        }
+    }
     
-    const uint8_t* apple_data = mfg_data + 2;
-    uint8_t apple_len = len - 2;
-    
-    uint8_t offset = 0;
-    while(offset < apple_len) {
-        if(offset + 1 >= apple_len) break;
+    if(!starts_with_zeros || data[8] != 0x01) {
+        FURI_LOG_I(TAG, "AirDrop packet format mismatch - using flexible parsing");
+        // Try flexible parsing - maybe the structure is different
+        app->airdrop_packets_seen++;
         
-        uint8_t packet_type = apple_data[offset];
-        uint8_t packet_len = apple_data[offset + 1];
+        // Extract hashes from different positions
+        const uint8_t* apple_id_hash = &data[0];  // Try start of packet
+        const uint8_t* phone_hash = &data[2];
+        const uint8_t* email_hash = &data[4];
         
-        if(offset + 2 + packet_len > apple_len) break;
-        
-        const uint8_t* packet_data = &apple_data[offset + 2];
-        
-        if(packet_type == WIFI_JOIN_TYPE) {
-            parse_wifi_join(app, mac, packet_data, packet_len);
-        } else if(packet_type == NEARBY_TYPE) {
-            parse_nearby(app, mac, packet_data, packet_len);
+        if(len >= 9) {
+            apple_id_hash = &data[9];  // Standard position
+            phone_hash = &data[11];
+            email_hash = &data[13];
         }
         
-        offset += 2 + packet_len;
+        find_or_add_hash(app, mac, apple_id_hash, phone_hash, email_hash);
+        
+        // Add to screen log
+        char log_msg[64];
+        snprintf(log_msg, sizeof(log_msg), "AirDrop: %02X:%02X:%02X A:%02X%02X P:%02X%02X",
+                 mac[3], mac[4], mac[5],
+                 apple_id_hash[0], apple_id_hash[1],
+                 phone_hash[0], phone_hash[1]);
+        add_log_message(app, log_msg);
+        return;
+    }
+    
+    // Standard parsing for correctly formatted packets
+    const uint8_t* apple_id_hash = &data[9];
+    const uint8_t* phone_hash = &data[11];
+    const uint8_t* email_hash = &data[13];
+    
+    app->airdrop_packets_seen++;
+    
+    find_or_add_hash(app, mac, apple_id_hash, phone_hash, email_hash);
+    
+    FURI_LOG_I(TAG, "AirDrop: MAC %02X:%02X:%02X, AppleID:%02X%02X Phone:%02X%02X Email:%02X%02X",
+               mac[3], mac[4], mac[5],
+               apple_id_hash[0], apple_id_hash[1],
+               phone_hash[0], phone_hash[1], 
+               email_hash[0], email_hash[1]);
+    
+    // Add to screen log
+    char log_msg[64];
+    snprintf(log_msg, sizeof(log_msg), "AirDrop: %02X:%02X:%02X A:%02X%02X P:%02X%02X",
+             mac[3], mac[4], mac[5],
+             apple_id_hash[0], apple_id_hash[1],
+             phone_hash[0], phone_hash[1]);
+    add_log_message(app, log_msg);
+}
+
+/* Parse BLE packet TLV structure */
+static void parse_ble_packet_tlv(const uint8_t* data, uint8_t len, AppleBleHashDemo* app, const uint8_t* mac, const uint8_t* full_packet, uint16_t full_len) {
+    uint8_t offset = 0;
+    
+    while(offset + 1 < len) {
+        uint8_t type = data[offset];
+        uint8_t type_len = data[offset + 1];
+        
+        if(offset + 2 + type_len > len) break;
+        
+        FURI_LOG_D(TAG, "TLV: type=0x%02X len=%d", type, type_len);
+        
+        if(type == AIRDROP_TYPE) {
+            FURI_LOG_I(TAG, "Found old AirDrop packet (type 0x05)!");
+            
+            // Log the FULL raw packet here
+            char hex_str[full_len * 3 + 1];
+            size_t hex_offset = 0;
+            for(uint16_t i = 0; i < full_len && hex_offset < sizeof(hex_str) - 3; i++) {
+                hex_offset += snprintf(hex_str + hex_offset, sizeof(hex_str) - hex_offset, "%02X ", full_packet[i]);
+            }
+            FURI_LOG_I(TAG, "FULL RAW PACKET (len=%d): %s", full_len, hex_str);
+            
+            parse_airdrop_old(app, mac, &data[offset + 2], type_len);
+        }
+        
+        offset += 2 + type_len;
     }
 }
 
@@ -177,19 +283,36 @@ static void sniffer_packet_cb(const uint8_t* data, uint16_t len, int8_t rssi, vo
     
     app->packets_seen++;
     
-    // BLE packet structure for Flipper sniffer:
-    // First 6 bytes are typically the advertising address (MAC)
-    // Then comes the advertisement data payload
-    if(len < 8) return; // Need minimum packet size
+    // LED flicker for packet received
+    furi_hal_light_set(LightGreen, 0xFF);
+    furi_delay_ms(25);
+    furi_hal_light_set(LightGreen, 0x00);
     
-    uint8_t mac[6];
-    memcpy(mac, data, 6);
+    // Log first few packets to understand structure
+    static int debug_count = 0;
+    if(debug_count < 5) {
+        debug_count++;
+        char hex_str[len * 3 + 1];
+        size_t offset = 0;
+        for(uint16_t i = 0; i < len && offset < sizeof(hex_str) - 3; i++) {
+            offset += snprintf(hex_str + offset, sizeof(hex_str) - offset, "%02X ", data[i]);
+        }
+        FURI_LOG_I(TAG, "Debug packet %d (len=%d): %s", debug_count, len, hex_str);
+    }
     
-    // Skip the first 6 bytes (MAC) and process advertisement data
-    const uint8_t* ad_data = data + 6;
-    uint16_t ad_len = len - 6;
+    // Parse BLE advertisement data looking for Apple manufacturer data
+    uint8_t mac[6] = {0};
+    const uint8_t* ad_data = data;
+    uint16_t ad_len = len;
     
-    // Find manufacturer specific data in advertisement payload
+    // If packet starts with what looks like a MAC, skip it
+    if(len > 6 && (data[0] != 0x02 && data[0] != 0x03)) {
+        memcpy(mac, data, 6);
+        ad_data = data + 6;
+        ad_len = len - 6;
+    }
+    
+    // Find manufacturer specific data (type 0xFF)
     uint8_t mfg_len = 0;
     const uint8_t* mfg_data = find_ad_type(ad_data, ad_len, 0xFF, &mfg_len);
     
@@ -197,7 +320,12 @@ static void sniffer_packet_cb(const uint8_t* data, uint16_t len, int8_t rssi, vo
         uint16_t company_id = mfg_data[0] | (mfg_data[1] << 8);
         
         if(company_id == APPLE_COMPANY_ID) {
-            parse_apple_data(mfg_data, mfg_len, app, mac);
+            FURI_LOG_D(TAG, "Apple packet found, mfg_len=%d", mfg_len);
+            
+            // Parse Apple TLV data after company ID
+            if(mfg_len > 2) {
+                parse_ble_packet_tlv(&mfg_data[2], mfg_len - 2, app, mac, data, len);
+            }
         }
     }
 }
@@ -229,49 +357,21 @@ static void draw_cb(Canvas* canvas, void* ctx) {
     
     // Title
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 64, 2, AlignCenter, AlignTop, "BLE Hash Demo");
+    canvas_draw_str_aligned(canvas, 64, 2, AlignCenter, AlignTop, "AirDrop Sniffer");
     
     canvas_set_font(canvas, FontSecondary);
-    snprintf(buf, sizeof(buf), "Hashes: %zu  Pkts: %lu", app->hash_count, app->packets_seen);
+    snprintf(buf, sizeof(buf), "Pkts:%lu AirDrop:%lu Hashes:%zu", 
+             app->packets_seen, app->airdrop_packets_seen, app->hash_count);
     canvas_draw_str_aligned(canvas, 64, 12, AlignCenter, AlignTop, buf);
     
-    // Column headers
-    canvas_draw_str_aligned(canvas, 1, 22, AlignLeft, AlignTop, "MAC");
-    canvas_draw_str_aligned(canvas, 50, 22, AlignLeft, AlignTop, "Apple ID Hash");
-    canvas_draw_str_aligned(canvas, 110, 22, AlignLeft, AlignTop, "Seen");
+    // Draw recent AirDrop packets log
+    canvas_draw_str_aligned(canvas, 1, 22, AlignLeft, AlignTop, "Recent AirDrop packets:");
     
-    // Hash entries
     int y = 32;
-    size_t max_visible = 3;
-    
-    for(size_t i = app->scroll_pos; i < app->hash_count && i < app->scroll_pos + max_visible; i++) {
-        HashEntry* entry = &app->hashes[i];
-        
-        // MAC (truncated)
-        canvas_draw_str_aligned(canvas, 1, y, AlignLeft, AlignTop, entry->mac_short);
-        
-        // Apple ID hash
-        snprintf(buf, sizeof(buf), "%02X%02X%02X", 
-                 entry->apple_id_hash[0], 
-                 entry->apple_id_hash[1], 
-                 entry->apple_id_hash[2]);
-        canvas_draw_str_aligned(canvas, 50, y, AlignLeft, AlignTop, buf);
-        
-        // Seen count
-        snprintf(buf, sizeof(buf), "%lu", entry->seen_count);
-        canvas_draw_str_aligned(canvas, 110, y, AlignLeft, AlignTop, buf);
-        
-        y += 10;
-    }
-    
-    // Scroll indicators
-    if(app->hash_count > max_visible) {
-        if(app->scroll_pos > 0) {
-            canvas_draw_str_aligned(canvas, 122, 32, AlignLeft, AlignTop, "^");
-        }
-        if(app->scroll_pos + max_visible < app->hash_count) {
-            canvas_draw_str_aligned(canvas, 122, 52, AlignLeft, AlignTop, "v");
-        }
+    for(int i = 0; i < app->log_buffer.log_count && i < 5; i++) {
+        int log_idx = (app->log_buffer.log_start + app->log_buffer.log_count - 1 - i) % MAX_LOG_LINES;
+        canvas_draw_str_aligned(canvas, 1, y, AlignLeft, AlignTop, app->log_buffer.log_lines[log_idx]);
+        y += 8;
     }
 }
 
@@ -299,9 +399,7 @@ int32_t apple_ble_hash_demo_app(void* p) {
     app->gui = furi_record_open("gui");
     gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
     
-    // Start sniffer quietly
-    
-    // Initialize BLE sniffer
+    // Start sniffer
     furi_hal_bt_lock_core2();
     furi_hal_bt_stop_advertising();
     furi_hal_bt_unlock_core2();
@@ -311,6 +409,9 @@ int32_t apple_ble_hash_demo_app(void* p) {
     
     if(furi_hal_bt_sniffer_start(sniffer_packet_cb, app)) {
         app->sniffer_active = true;
+        FURI_LOG_I(TAG, "BLE sniffer started successfully");
+    } else {
+        FURI_LOG_E(TAG, "Failed to start BLE sniffer");
     }
     
     InputEvent input;
@@ -328,16 +429,12 @@ int32_t apple_ble_hash_demo_app(void* p) {
         if(furi_message_queue_get(app->input_queue, &input, 10) == FuriStatusOk) {
             if(input.type == InputTypePress) {
                 switch(input.key) {
-                case InputKeyUp:
-                    if(app->scroll_pos > 0) app->scroll_pos--;
-                    break;
-                case InputKeyDown:
-                    if(app->scroll_pos + 3 < app->hash_count) app->scroll_pos++;
-                    break;
                 case InputKeyOk:
-                    // Clear all hashes
+                    // Clear log and hashes
                     app->hash_count = 0;
-                    app->scroll_pos = 0;
+                    app->log_buffer.log_count = 0;
+                    app->log_buffer.log_start = 0;
+                    app->airdrop_packets_seen = 0;
                     break;
                 case InputKeyBack:
                     exit_loop = true;
@@ -347,6 +444,8 @@ int32_t apple_ble_hash_demo_app(void* p) {
                 }
             }
         }
+
+        furi_delay_ms(10);
         
         view_port_update(app->view_port);
     }

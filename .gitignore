@@ -7,3 +7,5 @@ dist/*
 .ufbt
 dist/
 CLAUDE.md*
+old
+ble_st

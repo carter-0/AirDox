@@ -22,8 +22,8 @@ typedef struct {
 } Demo;
 
 static const Demo demos[] = {
-    {"Apple BLE State", apple_ble_read_state_app},
-    {"Apple BLE Hash Demo", apple_ble_hash_demo_app},
+    {"Apple BLE Sniffer", apple_ble_read_state_app},
+    {"AirDrop Doxxer", apple_ble_hash_demo_app},
 };
 
 typedef struct {

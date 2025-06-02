@@ -5,19 +5,18 @@ App(
     name="AirDox",  # Displayed in menus
     apptype=FlipperAppType.EXTERNAL,
     entry_point="air_dox_app",
-    stack_size=4 * 1024,
+    stack_size=2 * 1024,
     requires=["bt"],
-    fap_category="Tools",
+    fap_category="Bluetooth",
     sources=[
         "air_dox.c",
         "apple_ble_read_state.c",
-        "apple_ble_hash_demo.c",
+        "apple_ble_hash_demo.c"
     ],
-    # Optional values
-    # fap_version="0.1",
+    fap_version="1.0.0",
     fap_icon="air_dox.png",  # 10x10 1-bit PNG
-    # fap_description="A simple app",
-    # fap_author="J. Doe",
-    # fap_weburl="https://github.com/user/air_dox",
+    fap_description="Fun with Apple BLE",
+    fap_author="Carter Annandale",
+    fap_weburl="https://github.com/carter-0/AirDox",
     fap_icon_assets="images",  # Image assets to compile for this application
 )
