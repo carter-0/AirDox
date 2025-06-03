@@ -11,7 +11,7 @@ This Flipper Application requires my [firmware fork](https://github.com/carter-0
 
 ### Simple
 
-1. Follow the [firmware installation instructions](https://github.com/carter-0/flipperzero-firmware#Installation (easy))
+1. Follow the [firmware installation instructions](https://github.com/carter-0/flipperzero-firmware?tab=readme-ov-file#flipper-zero-firmware-my-ble-fork)
 2. Download the .fap from [Releases](https://github.com/carter-0/AirDox/releases)
 3. Copy the file onto your Flipper into `apps/Bluetooth`
 
@@ -36,7 +36,7 @@ App:
 
 Partially deanonymise nearby AirDrop senders by sniffing BLE packets with your Flipper Zero.
 
-TODO: image
+https://github.com/user-attachments/assets/37063ac0-6deb-41b1-8f15-672d0e883670
 
 ### Limitations
 
@@ -112,7 +112,7 @@ The idea is:
 
 A Flipper Zero port of [ble_read_state.py](https://github.com/hexway/apple_bleee/blob/master/ble_read_state.py) from [hexway/apple_bleee](https://github.com/hexway/apple_bleee)
 
-TODO: image
+https://github.com/user-attachments/assets/4c8cb239-aa03-4240-b93e-10f2748e9dfa
 
 ## Acknowledgements
 
@@ -124,8 +124,7 @@ Milan Stute, and Christian Weinert, TU Darmstadt
 
 [[2]](https://github.com/hexway/apple_bleee): Apple Bleee: Hexway, Dmitry Chastuhin, gelim, noplanman, CaptainStabs, cclauss
 
-
-[[3](https://petsymposium.org/popets/2020/popets-2020-0003.pdf)]: Discontinued Privacy: Personal Data Leaks in Apple Bluetooth-Low-Energy Continuity Protocols: Guillaume Celosia, Mathieu Cunche
+[[3]](https://petsymposium.org/popets/2020/popets-2020-0003.pdf): Discontinued Privacy: Personal Data Leaks in Apple Bluetooth-Low-Energy Continuity Protocols: Guillaume Celosia, Mathieu Cunche
 
 
 ## License
