@@ -25,7 +25,7 @@
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define _PICOHASH_BIG_ENDIAN
 #endif
-#elif !defined(_WIN32) && !defined(__FLIPPER__)
+#elif !defined(_WIN32) && !defined(__FLIPPER__) && !defined(__ARM_ARCH)
 #include <endian.h> // machine/endian.h
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define _PICOHASH_BIG_ENDIAN

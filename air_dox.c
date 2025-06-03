@@ -66,7 +66,7 @@ static void draw_cb(Canvas* canvas, void* ctx) {
     
     // Instructions
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str_aligned(canvas, 64, 54, AlignCenter, AlignBottom, "OK to run, Back to exit");
+    canvas_draw_str_aligned(canvas, 64, 64, AlignCenter, AlignBottom, "OK to run, Back to exit");
 }
 
 static void input_cb(InputEvent* evt, void* ctx) {

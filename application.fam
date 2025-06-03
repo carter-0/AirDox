@@ -1,8 +1,6 @@
-# For details & more options, see documentation/AppManifests.md in firmware repo
-
 App(
-    appid="air_dox",  # Must be unique
-    name="AirDox",  # Displayed in menus
+    appid="air_dox",
+    name="AirDox",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="air_dox_app",
     stack_size=2 * 1024,
@@ -13,10 +11,9 @@ App(
         "apple_ble_read_state.c",
         "apple_ble_hash_demo.c"
     ],
-    fap_version="1.0.0",
-    fap_icon="air_dox.png",  # 10x10 1-bit PNG
+    fap_version="0.1.0",
+    fap_icon="air_dox.png",
     fap_description="Fun with Apple BLE",
     fap_author="Carter Annandale",
-    fap_weburl="https://github.com/carter-0/AirDox",
-    fap_icon_assets="images",  # Image assets to compile for this application
+    fap_weburl="https://github.com/carter-0/AirDox"
 )
