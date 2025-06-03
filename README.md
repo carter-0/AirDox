@@ -7,7 +7,7 @@ Two Apple-related Flipper Zero BLE sniffing demos:
 
 ## Installation
 
-This Flipper Application requires my [firmware fork](https://github.com/carter-0/flipperzero-firmware) because it uses the full BLE stack. More details in the repo.
+This app requires my [firmware fork](https://github.com/carter-0/flipperzero-firmware) because it uses the full BLE stack. More details in the repo.
 
 ### Simple
 
@@ -76,10 +76,12 @@ If we zoom in on the hashed contact data:
 In this case, `Identifier C` is the hashed phone number, calculated as
 
 ```python
-hashlib.sha256(phone_number.encode('utf-8')).hexdigest()[:16]
+HEX(SHA256(phone_number))[:4]
 ```
 
-In previous versions of iOS, Apple always sent them in the order:
+i.e. the first 2 bytes of the SHA256 hash of the sender's phone number.
+
+In previous versions of iOS, Apple always sent each identifier in the same order:
 
 | Position | Identifier | Content |
 |----------|------------|---------|
@@ -116,7 +118,7 @@ https://github.com/user-attachments/assets/4c8cb239-aa03-4240-b93e-10f2748e9dfa
 
 ## Acknowledgements
 
-This project wouldn've been possible without the work of:
+This project wouldn't have been possible without the work of:
 
 [[1]](https://www.usenix.org/system/files/sec21-heinrich.pdf): PrivateDrop: Practical Privacy-Preserving Authentication for Apple AirDrop
 Alexander Heinrich, Matthias Hollick, Thomas Schneider,
