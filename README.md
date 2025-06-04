@@ -22,8 +22,8 @@ Firmware:
 1. `git clone https://github.com/carter-0/flipperzero-firmware`
 2. `cd flipperzero-firmware`
 3. Connect your Flipper Zero to your device
-4. `./fbt updater_package COMPACT=1 DEBUG=1 COPRO_STACK_BIN=stm32wb5x_BLE_Stack_full_fw.bin COPRO_STACK_TYPE=ble_full`
-5. `./fbt COMPACT=1 DEBUG=1 COPRO_STACK_TYPE=ble_full COPRO_STACK_BIN=stm32wb5x_BLE_Stack_full_fw.bin COPRO_OB_DATA=scripts/ob_custradio.data COPRO_DISCLAIMER=1 flash_usb_full`
+4. `./fbt updater_package COMPACT=1 DEBUG=0 COPRO_STACK_BIN=stm32wb5x_BLE_Stack_full_fw.bin COPRO_STACK_TYPE=ble_full`
+5. `./fbt COMPACT=1 DEBUG=0 COPRO_STACK_TYPE=ble_full COPRO_STACK_BIN=stm32wb5x_BLE_Stack_full_fw.bin COPRO_OB_DATA=scripts/ob_custradio.data COPRO_DISCLAIMER=1 flash_usb_full`
 
 App:
 
@@ -115,6 +115,8 @@ The idea is:
 A Flipper Zero port of [ble_read_state.py](https://github.com/hexway/apple_bleee/blob/master/ble_read_state.py) from [hexway/apple_bleee](https://github.com/hexway/apple_bleee)
 
 https://github.com/user-attachments/assets/4c8cb239-aa03-4240-b93e-10f2748e9dfa
+
+A lot of the features in the original implementation 6 years ago seem to be broken with modern Apple devices. I've stripped out WiFi & OS detection because they were completely unreliable, and I'll warn that device state detection also seems temperamental.
 
 ## Acknowledgements
 
