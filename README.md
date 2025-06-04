@@ -101,10 +101,10 @@ The idea is:
 1. Upload `phonenumbers.txt` to your Flipper, in the format:
    ```
    +447728392917
-   07463908720
+   +44 07463 908720
    (etc, up to 1k entries)
    ```
-   One phone number per line, format is standardised in-app (though only tested with UK numbers) so don't worry about cleaning.
+   The format is standardised in-app, but E.164 format ("+447728392917") is preferred.
 
 2. Start AirDox Sniffer, choose your file. In the background we'll compute the truncated SHA256 hash for each phone number.
 
